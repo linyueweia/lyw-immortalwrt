@@ -20,7 +20,8 @@ concurrency:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-25.12
+  # use official stable 25.12.1 source (tag v25.12.1 => kernel 6.12.94, hash 9695dbb0 aligned)
+  REPO_BRANCH: v25.12.1
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
@@ -50,7 +51,7 @@ jobs:
         echo "last_built_sha=${LAST_SHA}"
         echo "force_build=${FORCE}"
 
-        API_SHA=$(curl -s "https://api.github.com/repos/immortalwrt/immortalwrt/commits/openwrt-25.12?per_page=1" \
+        API_SHA=$(curl -s "https://api.github.com/repos/immortalwrt/immortalwrt/commits/v25.12.1?per_page=1" \
           | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1 || true)
         echo "upstream_sha=${API_SHA}"
 

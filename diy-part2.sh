@@ -31,6 +31,10 @@ if [ -f "$STORE_MK" ]; then
     sed -i 's/ +libuci-lua//g; s/^LUCI_DEPENDS:=\(.*\)/LUCI_DEPENDS:=\1 +luci-compat +luci-lua-runtime/' "$STORE_MK"
     echo ">>> diy-part2: patched store Makefile deps:"
     grep '^LUCI_DEPENDS' "$STORE_MK"
+    # 重新 install store(及其已启用依赖): feeds install -a 在 diy-part2 之前跑,
+    # 若 store 因 +libuci-lua 不可满足被跳过, 这里补链接进 package/feeds/, 否则编不进。
+    ./scripts/feeds install -p store luci-app-store 2>&1 | tail -5 || true
+    echo ">>> diy-part2: re-installed store feed"
 else
     echo "!!! diy-part2: store Makefile NOT FOUND at $STORE_MK (store feed not installed?)"
 fi
