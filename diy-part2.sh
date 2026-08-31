@@ -33,8 +33,18 @@ if [ -f "$STORE_MK" ]; then
     grep '^LUCI_DEPENDS' "$STORE_MK"
     # 重新 install store(及其已启用依赖): feeds install -a 在 diy-part2 之前跑,
     # 若 store 因 +libuci-lua 不可满足被跳过, 这里补链接进 package/feeds/, 否则编不进。
+    # 注意: feeds install 读的是 feeds/store.index(纯文本缓存, 由 feeds update 生成),
+    # 而非实时 Makefile。只 sed Makefile 不会让依赖检查生效;
+    # 必须先 `feeds update -i store` 用已修改的 Makefile 重建 index, 再 install。
+    ./scripts/feeds update -i store 2>&1 | tail -5 || true
     ./scripts/feeds install -p store luci-app-store 2>&1 | tail -5 || true
-    echo ">>> diy-part2: re-installed store feed"
+    echo ">>> diy-part2: rebuilt store index + re-installed store feed"
+    # 验证链接结果
+    if [ -d "package/feeds/store/luci-app-store" ]; then
+        echo ">>> OK: luci-app-store linked into package/feeds/store/"
+    else
+        echo "!!! luci-app-store still NOT linked; check feeds/store.index deps"
+    fi
 else
     echo "!!! diy-part2: store Makefile NOT FOUND at $STORE_MK (store feed not installed?)"
 fi
