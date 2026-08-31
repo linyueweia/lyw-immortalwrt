@@ -17,34 +17,27 @@
 # sed -i 's/OpenWrt/ImmortalWrt/g' package/base-files/files/bin/config_generate
 
 # ============================================================================
-# luci-app-store (iStore) ImmortalWrt 25.12 (LuCI 24) 适配
-# 原因: linkease/istore main 的 Makefile 依赖 +libuci-lua (老 LuCI C 库绑定),
-#       而 ImmortalWrt 25.12 (LuCI 24) 无此包, 导致 make defconfig 静默把
-#       luci-app-store 排除, 固件里没有 iStore。
-# 实际 store 运行时用 luci.model.uci (luci-lua-runtime 提供) + luci-compat,
-#       并不需要 libuci-lua, 该依赖是冗余残留。故去除并补 luci-compat/luci-lua-runtime。
-# 注意: 必须在 feeds update/install 之后做 (此处即 diy-part2), 否则会被
-#       feeds update 重新 clone 覆盖。
+# luci-app-store (iStore) ImmortalWrt 25.12 (APK 体系) 集成
+# 根因(既往排查, 血泪): ImmortalWrt 25.12.1 官方默认 USE_APK=y (APK 包体系,
+#       见 config/Config-build.in), 而 linkease/istore main 的 luci-app-store
+#       已适配 APK (LUCI_TITLE: "LuCI based ipk/apk store", PKG_VERSION 0.2.1-r1)。
+#       以前习惯在 diy-part2 里 sed 掉其依赖 +libuci-lua 是错误方向——
+#       那是在破坏官方已做好的 APK 适配, 反而让 luci-app-store 无法被
+#       APK 打包纳入 manifest。正确做法: 不动依赖, 让 store 在 APK 体系下
+#       通过标准 feeds 流程构建。
+# 注意: feeds install 读 feeds/store.index 缓存(由 feeds update 生成),
+#       这里显式重刷 index 再 install 仅作保险, 不修改任何依赖。
 # ============================================================================
-STORE_MK=feeds/store/luci/luci-app-store/Makefile
-if [ -f "$STORE_MK" ]; then
-    sed -i 's/ +libuci-lua//g; s/^LUCI_DEPENDS:=\(.*\)/LUCI_DEPENDS:=\1 +luci-compat +luci-lua-runtime/' "$STORE_MK"
-    echo ">>> diy-part2: patched store Makefile deps:"
-    grep '^LUCI_DEPENDS' "$STORE_MK"
-    # 重新 install store(及其已启用依赖): feeds install -a 在 diy-part2 之前跑,
-    # 若 store 因 +libuci-lua 不可满足被跳过, 这里补链接进 package/feeds/, 否则编不进。
-    # 注意: feeds install 读的是 feeds/store.index(纯文本缓存, 由 feeds update 生成),
-    # 而非实时 Makefile。只 sed Makefile 不会让依赖检查生效;
-    # 必须先 `feeds update -i store` 用已修改的 Makefile 重建 index, 再 install。
-    ./scripts/feeds update -i store 2>&1 | tail -5 || true
-    ./scripts/feeds install -p store luci-app-store 2>&1 | tail -5 || true
-    echo ">>> diy-part2: rebuilt store index + re-installed store feed"
-    # 验证链接结果
-    if [ -d "package/feeds/store/luci-app-store" ]; then
-        echo ">>> OK: luci-app-store linked into package/feeds/store/"
-    else
-        echo "!!! luci-app-store still NOT linked; check feeds/store.index deps"
-    fi
+# 显式确认 APK 包管理(诊断用; 实际由 .config 的 CONFIG_USE_APK=y 决定)
+grep -q '^CONFIG_USE_APK=y' .config && echo ">>> diy-part2: CONFIG_USE_APK=y (APK 包体系) confirmed" \
+    || { echo ">>> diy-part2: WARN: CONFIG_USE_APK not set to y, forcing it"; echo 'CONFIG_USE_APK=y' >> .config; }
+./scripts/feeds update -i store 2>&1 | tail -3 || true
+./scripts/feeds install -p store luci-app-store 2>&1 | tail -3 || true
+echo ">>> diy-part2: install store feed (deps left intact for APK) done"
+if [ -d "package/feeds/store/luci-app-store" ]; then
+    echo ">>> OK: luci-app-store linked into package/feeds/store/"
+    # 复述官方依赖, 确认未被动过
+    grep '^LUCI_DEPENDS' package/feeds/store/luci-app-store/Makefile || true
 else
-    echo "!!! diy-part2: store Makefile NOT FOUND at $STORE_MK (store feed not installed?)"
+    echo "!!! luci-app-store NOT linked; check feeds/store.index deps (APK 体系下 store 依赖须可满足)"
 fi
