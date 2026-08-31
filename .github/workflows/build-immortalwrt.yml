@@ -1,0 +1,240 @@
+name: Build ImmortalWrt T68M
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 强制重新编译(即使上游无更新)
+        required: false
+        default: 'false'
+        type: boolean
+  schedule:
+    - cron: '30 */2 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-immortalwrt-cron
+  cancel-in-progress: false
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-25.12
+  FEEDS_CONF: feeds.conf
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_BIN_DIR: true
+  UPLOAD_FIRMWARE: true
+  TZ: Asia/Shanghai
+  ARCHITECTURE: armv8
+
+jobs:
+  watch-upstream:
+    runs-on: ubuntu-22.04
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
+    steps:
+    - uses: actions/checkout@main
+
+    - name: 检查上游 openwrt-25.12 更新
+      id: check
+      run: |
+        FORCE="${{ github.event_name == 'workflow_dispatch' && inputs.force_build || 'false' }}"
+        LAST_SHA=""
+        if [ -f last-upstream-sha ]; then
+          LAST_SHA=$(cat last-upstream-sha)
+        fi
+        echo "last_built_sha=${LAST_SHA}"
+        echo "force_build=${FORCE}"
+
+        API_SHA=$(curl -s "https://api.github.com/repos/immortalwrt/immortalwrt/commits/openwrt-25.12?per_page=1" \
+          | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1 || true)
+        echo "upstream_sha=${API_SHA}"
+
+        if [ "$FORCE" = "true" ]; then
+          echo "changed=true"
+          echo "changed=true" >> $GITHUB_OUTPUT
+        elif [ -z "$API_SHA" ]; then
+          echo "检查上游失败，本次跳过"
+          echo "changed=false" >> $GITHUB_OUTPUT
+        elif [ "$API_SHA" = "$LAST_SHA" ]; then
+          echo "上游无更新，无需重编"
+          echo "changed=false" >> $GITHUB_OUTPUT
+        else
+          echo "上游有新版本，触发重编"
+          echo "changed=true" >> $GITHUB_OUTPUT
+        fi
+        echo "upstream_sha=${API_SHA}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: watch-upstream
+    if: needs.watch-upstream.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+    - name: 准备完成
+      uses: actions/checkout@main
+
+    - name: 初始化编译环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        echo "------------------------------- 更新并安装依赖 -------------------------------"
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install $(cat $GITHUB_WORKSPACE/depends/ubuntu-22.04) || true
+        sudo -E apt-get -qq install -y python3-pip >/dev/null 2>&1 || true
+        sudo pip3 install pyelftools || true
+        echo "------------------------------- 清理Docker镜像和软件 -------------------------------"
+        docker rmi `docker images -q` || true
+        docker image prune -a -f || true
+        sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* android* || true
+        sudo -E apt-get -qq autoremove --purge || true
+        echo "------------------------------- 设置工作目录及时区 -------------------------------"
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: 克隆源码
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: 缓存构建动作
+      uses: klever1988/cachewrtbuild@main
+      with:
+        ccache: 'true'
+        mixkey: ubuntu-22.04-${{ env.ARCHITECTURE }}-${{ env.REPO_BRANCH }}
+        prefix: ${{ github.workspace }}/openwrt
+
+    - name: 加载自定义 feeds+DIY1
+      env:
+        FEEDS_CONF_PATH: ${{ env.ARCHITECTURE }}/${{ env.FEEDS_CONF }}
+      run: |
+        [ -e $FEEDS_CONF_PATH ] && mv $FEEDS_CONF_PATH openwrt/$FEEDS_CONF
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: 更新 feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: 安装 feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: 加载自定义配置+DIY2
+      env:
+        CONFIG_FILE_PATH: ${{ env.ARCHITECTURE }}/${{ env.CONFIG_FILE }}
+      run: |
+        [ -e $CONFIG_FILE_PATH ] && mv $CONFIG_FILE_PATH openwrt/$CONFIG_FILE
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: 下载软件包
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: 编译固件
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        set -o pipefail
+        make -j$(nproc) V=s 2>&1 | tee "$GITHUB_WORKSPACE/world-build.log" || {
+          echo "===> main build FAILED; verbose single-thread retry"
+          make -j1 V=s 2>&1 | tail -150
+          echo "===> targeted re-run of target/linux/install V=s"
+          make V=s target/linux/install 2>&1 | tail -300
+          echo "===> read-only precondition checks"
+          ls -l build_dir/target-aarch64_generic_musl/linux-rockchip_armv8/image-rk3568-lyt-t68m.dtb 2>&1
+          ls -l staging_dir/image/easepi-rk3568-u-boot-rockchip.bin 2>&1
+          ls -l target/linux/rockchip/image/armv8/rk3568.bootscript 2>&1
+          echo "===> last 120 lines of world build log"
+          tail -120 "$GITHUB_WORKSPACE/world-build.log"
+          exit 1
+        }
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上传编译日志
+      uses: actions/upload-artifact@main
+      if: always() && hashFiles('world-build.log') != ''
+      with:
+        name: world-build-log
+        path: world-build.log
+
+    - name: 检查磁盘空间
+      if: (!cancelled())
+      run: df -hT
+
+    - name: 上传 bin 文件夹
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: 整理固件文件
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上传固件目录
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: 发布 Release
+      uses: softprops/action-gh-release@v2
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v25.12-${{ env.FILE_DATE }}-${{ github.sha }}
+        name: LYT T68M ImmortalWrt ${{ env.FILE_DATE }}
+        body: |
+          LYT T68M (rk3568) ImmortalWrt openwrt-25.12 (kernel 6.12) 定制固件
+
+          包含子板恢复补丁：SATA2 (sata@fc800000) + SDIO WiFi (AIC8800, sdmmc2)。
+          内置 iStore 应用商店 (luci-app-store + luci-lib-taskd) 与磁盘管理 (luci-app-diskman)、argon 主题。
+          - eth0/eth1 千兆、eth2/eth3 RTL8125 2.5G、USB 均不受影响
+          - 刷写前请先整盘备份 mmcblk0（至少 /boot 与 overlay）
+          - 设备串口 console=ttyS2,1500000
+
+          images 与 sha256sums 见本 Release assets。
+        files: |
+          openwrt/bin/targets/*/*/immortalwrt-*
+          openwrt/bin/targets/*/*/sha256sums
+        fail_on_unmatched_files: true
+
+    - name: 记录已编译上游版本
+      if: success()
+      env:
+        UPSTREAM_SHA: ${{ needs.watch-upstream.outputs.upstream_sha }}
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        git config user.name "immwrt-build-bot"
+        git config user.email "immwrt-build-bot@users.noreply.github.com"
+        echo "${UPSTREAM_SHA}" > last-upstream-sha
+        git add -- last-upstream-sha
+        if git diff --cached --quiet -- last-upstream-sha; then
+          echo "last-upstream-sha 无变化，跳过提交"
+        else
+          git commit -m "build: record upstream ${{ env.REPO_BRANCH }} ${UPSTREAM_SHA}"
+          git push origin "${{ github.ref_name }}" || echo "push 失败(可忽略)"
+        fi
