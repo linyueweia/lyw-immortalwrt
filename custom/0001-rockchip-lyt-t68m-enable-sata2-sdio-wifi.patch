@@ -1,7 +1,7 @@
 diff --git a/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts b/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
 --- a/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
 +++ b/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
-@@ -186,7 +186,40 @@
+@@ -190,7 +190,38 @@
  &combphy2 {
  	status = "okay";
  };
@@ -40,7 +40,7 @@ diff --git a/target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt
  &cpu0 {
  	cpu-supply = <&vdd_cpu>;
  };
-@@ -645,7 +645,13 @@
+@@ -646,11 +646,17 @@
  	pmic {
  		pmic_int: pmic_int {
  			rockchip,pins = <0 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>;
