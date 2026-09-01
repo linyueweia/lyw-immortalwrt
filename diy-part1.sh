@@ -53,7 +53,8 @@ if [ -n "$Releases_version" ]; then
         "https://downloads.immortalwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
         "https://mirrors.cernet.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
         "https://mirrors.ustc.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" ; do
-        http_value=$(wget -qO- --timeout=8 --tries=1 "$base" 2>/dev/null || true)
+        # 用 curl 而非 wget: 实测 wget 在该官方源上会异常卡死(超时不生效), curl 约1s稳定抓到
+        http_value=$(curl -fsSL --connect-timeout 15 --max-time 25 "$base" 2>/dev/null || true)
         hash_value=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
         if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]]; then
             echo ">>> diy-part1: 从 $base 抓到官方 kmod hash = $hash_value"
