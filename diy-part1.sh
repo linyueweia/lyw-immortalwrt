@@ -109,53 +109,86 @@ else
 fi
 echo ">>> diy-part1: --------------------------------------------------"
 
-PATCH="$GITHUB_WORKSPACE/custom/0001-rockchip-lyt-t68m-enable-sata2-sdio-wifi.patch"
-DTS=target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
+# ============================================================
+# 通用 DTS 补丁应用函数: 处理 custom/ 下任意个 rockchip t68m dts 补丁
+# 用法: apply_dts_patch <patch路径> <dts相对路径> <后置marker数组以 | 分隔(可空)>
+# ============================================================
+apply_dts_patch () {
+    local PATCH="$1"
+    local DTS="$2"
+    local MARKERS="${3:-}"
 
-if [ ! -f "$PATCH" ]; then
-    echo "!!! diy-part1: patch file missing: $PATCH"
-    exit 1
-fi
-
-if [ ! -f "$DTS" ]; then
-    echo "!!! diy-part1: target dts not found at $DTS (in $(pwd))"
-    exit 1
-fi
-
-echo ">>> diy-part1: normalizing patch (literal \\t -> real TAB, strip CR)"
-sed -i 's/\\t/\t/g' "$PATCH"
-sed -i 's/\r$//' "$PATCH"
-LIT=$(grep -c '\\t' "$PATCH" || true)
-echo ">>> diy-part1: literal backslash-t remaining: ${LIT:-0}"
-
-echo ">>> diy-part1: applying DTS patch ($PATCH) => $DTS"
-if command -v git >/dev/null 2>&1 && [ -d .git ]; then
-    echo ">>> diy-part1: trying git apply"
-    if git apply --check --verbose "$PATCH" 2>&1; then
-        git apply "$PATCH"
-        echo ">>> diy-part1: git apply OK"
-    else
-        echo "!!! diy-part1: git apply --check failed, falling back to patch -p1"
-        patch -p1 --batch --fuzz=0 -i "$PATCH"
-        echo ">>> diy-part1: patch -p1 OK (fallback)"
-    fi
-else
-    echo ">>> diy-part1: git not available, using patch -p1"
-    patch -p1 --batch --fuzz=0 -i "$PATCH"
-    echo ">>> diy-part1: patch -p1 OK"
-fi
-
-echo ">>> diy-part1: verifying DTS markers"
-for marker in '&sata2 {' 'sdio_pwrseq: sdio-pwrseq {' '&sdmmc2 {' 'wifi_enable_h: wifi-enable-h {'; do
-    if grep -qF "$marker" "$DTS"; then
-        echo "    marker OK: $marker"
-    else
-        echo "!!! diy-part1: marker NOT FOUND: $marker"
+    if [ ! -f "$PATCH" ]; then
+        echo "!!! diy-part1: patch file missing: $PATCH"
         exit 1
     fi
-done
+    if [ ! -f "$DTS" ]; then
+        echo "!!! diy-part1: target dts not found at $DTS (in $(pwd))"
+        exit 1
+    fi
 
-echo ">>> diy-part1: DTS patch applied and verified OK"
+    echo ">>> diy-part1: normalizing patch $PATCH (literal \\t -> TAB, strip CR)"
+    cp "$PATCH" "$PATCH.tmp"
+    sed -i 's/\\t/\t/g' "$PATCH.tmp"
+    sed -i 's/\r$//' "$PATCH.tmp"
+    local LIT
+    LIT=$(grep -c '\\t' "$PATCH.tmp" || true)
+    echo ">>> diy-part1: literal backslash-t remaining: ${LIT:-0}"
+
+    echo ">>> diy-part1: applying DTS patch ($PATCH) => $DTS"
+    if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+        echo ">>> diy-part1: trying git apply"
+        if git apply --check --verbose "$PATCH.tmp" 2>&1; then
+            git apply "$PATCH.tmp"
+            echo ">>> diy-part1: git apply OK"
+        else
+            echo "!!! diy-part1: git apply --check failed, falling back to patch -p1"
+            patch -p1 --batch --fuzz=0 -i "$PATCH.tmp"
+            echo ">>> diy-part1: patch -p1 OK (fallback)"
+        fi
+    else
+        echo ">>> diy-part1: git not available, using patch -p1"
+        patch -p1 --batch --fuzz=0 -i "$PATCH.tmp"
+        echo ">>> diy-part1: patch -p1 OK"
+    fi
+    rm -f "$PATCH.tmp"
+
+    if [ -n "$MARKERS" ]; then
+        echo ">>> diy-part1: verifying DTS markers (patch $PATCH)"
+        local m
+        local oldIFS="$IFS"
+        IFS='|'
+        for m in $MARKERS; do
+            IFS="$oldIFS"
+            if grep -qF "$m" "$DTS"; then
+                echo "    marker OK: $m"
+            else
+                echo "!!! diy-part1: marker NOT FOUND: $m"
+                exit 1
+            fi
+            IFS='|'
+        done
+        IFS="$oldIFS"
+        echo ">>> diy-part1: markers verified OK"
+    fi
+}
+
+DTS=target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
+
+# 0001: SATA2 + SDIO WiFi AIC8800 (已有)
+apply_dts_patch \
+    "$GITHUB_WORKSPACE/custom/0001-rockchip-lyt-t68m-enable-sata2-sdio-wifi.patch" \
+    "$DTS" \
+    '&sata2 {|sdio_pwrseq: sdio-pwrseq {|&sdmmc2 {|wifi_enable_h: wifi-enable-h {'
+
+# 0002: 官方 PCIe3.0 修复 (vcc3v3_pi6c 独立供电 + startup-delay-us 等待 PI6C 稳定)
+#       来源: istoreos commit 6c402813 "target/rockchip: lyt t68m fix pcie3.0 init"
+apply_dts_patch \
+    "$GITHUB_WORKSPACE/custom/0002-rockchip-lyt-t68m-fix-pcie3.0-init.patch" \
+    "$DTS" \
+    'vcc3v3_pi6c: vcc3v3-pi6c-regulator {|startup-delay-us = <50000>;|vin-supply = <&vcc3v3_pi6c>;|pi6c_enable_h: pi6c-enable-h {'
+
+echo ">>> diy-part1: both DTS patches applied and verified OK"
 
 echo ">>> diy-part1: v2 overlay (free combphy2 for SATA2 + keep miniPCIe rail powered)"
 cat >> "$DTS" <<'EOF'
