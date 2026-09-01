@@ -54,6 +54,56 @@ fi
 if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]] && [ -f include/version.mk ]; then
     echo "$hash_value" > .vermagic
     echo ">>> diy-part1: 已写入源码根 .vermagic = $hash_value (官方源 kmod 可装)"
+
+    # =================================================================
+    # 增强1: patch include/kernel-defaults.mk 的 vermagic 生成行
+    #   25.12.x 的 kernel-defaults.mk 在内核 configure 时用 .config.set
+    #   强制重算 $(LINUX_DIR)/.vermagic (源码根 .vermagic 根本不被读取),
+    #   导致 diy 写入的 hash 不生效。这里把该行改为:
+    #   "若源码根 $(TOPDIR)/.vermagic 存在且非空则直接采用, 否则回退原计算"
+    #   (用纯 shell 逐行重写, 避免 sed 对 $( )/[ ]/& 的转义兼容问题)
+    # =================================================================
+    KD=include/kernel-defaults.mk
+    if [ -f "$KD" ]; then
+        TMPF=$(mktemp)
+        KD_NEW_LINE='{ [ -s $(TOPDIR)/.vermagic ] && cat $(TOPDIR)/.vermagic > $(LINUX_DIR)/.vermagic; } || { grep '\''=[ym]'\'' $(LINUX_DIR)/.config.set | LC_ALL=C sort | $(MKHASH) md5 > $(LINUX_DIR)/.vermagic; }'
+        while IFS= read -r line; do
+            case "$line" in
+                *"grep '=[ym]' \$(LINUX_DIR)/.config.set"*)
+                    # 注意: Makefile recipe 行必须以 TAB 开头, 这里用 printf '\t%s\n' 补回
+                    printf '\t%s\n' "$KD_NEW_LINE" ;;
+                *)
+                    printf '%s\n' "$line" ;;
+            esac
+        done < "$KD" > "$TMPF" && mv "$TMPF" "$KD"
+        echo ">>> diy-part1: [增强1] kernel-defaults.mk 已 patch:"
+        grep -n 'vermagic' "$KD" | grep -q 'TOPDIR' && grep -n 'TOPDIR)/.vermagic' "$KD" || echo "!!! diy-part1: 未在 kernel-defaults.mk 找到 patch 结果"
+    else
+        echo "!!! diy-part1: $KD 不存在, 跳过增强1"
+    fi
+
+    # =================================================================
+    # 增强2(patch include/kernel.mk): 把 LINUX_VERMAGIC 直接写死为官方 hash
+    #   双保险: 即使 .vermagic 文件被某步流程覆盖/重算,
+    #   kmod 包的版本 hash 仍取官方值。
+    #   兼容官方 25.12.x 与 hanwckf 分支两种行格式。
+    # =================================================================
+    KM=include/kernel.mk
+    if [ -f "$KM" ]; then
+        TMPF=$(mktemp)
+        while IFS= read -r line; do
+            case "$line" in
+                *LINUX_VERMAGIC*".vermagic"*)
+                    printf '  LINUX_VERMAGIC:=%s\n' "$hash_value" ;;
+                *)
+                    printf '%s\n' "$line" ;;
+            esac
+        done < "$KM" > "$TMPF" && mv "$TMPF" "$KM"
+        echo ">>> diy-part1: [增强2] kernel.mk 的 LINUX_VERMAGIC 已写死为 $hash_value:"
+        grep -n 'LINUX_VERMAGIC' "$KM" || echo "!!! diy-part1: 未在 kernel.mk 找到 LINUX_VERMAGIC"
+    else
+        echo "!!! diy-part1: $KM 不存在, 跳过增强2"
+    fi
 else
     echo ">>> diy-part1: 未抓到官方 kmod hash, 将按本机 .config 计算 vermagic(官方源 kmod 可能装不上)"
 fi
