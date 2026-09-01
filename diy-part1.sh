@@ -26,6 +26,16 @@ echo ">>> diy-part1: GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
 #   (与 lyw/lyw-istoreos 仓库 fe29a88/c77e553 同法)
 # =====================================================================
 hash_value=""
+# ---------------------------------------------------------------------
+# 官方 kmods 目录 hash 锚点（硬兜底）
+#   ImmortalWrt 25.12.1 rockchip/armv8 官方软件源的内核模块版本 hash，
+#   已实测 https://downloads.immortalwrt.org/releases/25.12.1/targets/rockchip/armv8/kmods/
+#   下 6.12.94-1-<此hash>/packages.adb 返回 HTTP 200。
+#   运行时 wget 抓取可能因网络/超时失败（CI 里表现为无输出），故一旦抓不到
+#   立即回退到该已核实的官方 hash，绝不让 vermagic 静默降级。
+# ---------------------------------------------------------------------
+OFFICIAL_KMOD_HASH="9695dbb0de913313770c73e57b594a48"
+
 # 解析官方 ImmortalWrt release 版本: 优先取 version.mk 的 VERSION_REPO 行(如 .../releases/25.12.1),
 # 否则回退 requests 行/package/base-files
 Releases_version=""
@@ -37,18 +47,26 @@ if [ -z "$Releases_version" ]; then
 fi
 echo ">>> diy-part1: OpenWrt releases 版本 = ${Releases_version:-未知}"
 
+# 优先在线抓取官方 hash（限时，避免长时间卡住无输出）
 if [ -n "$Releases_version" ]; then
     for base in \
         "https://downloads.immortalwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
         "https://mirrors.cernet.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
         "https://mirrors.ustc.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" ; do
-        http_value=$(wget -qO- --timeout=20 "$base" 2>/dev/null || true)
+        http_value=$(wget -qO- --timeout=8 --tries=1 "$base" 2>/dev/null || true)
         hash_value=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
-        if [ -n "$hash_value" ]; then
+        if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]]; then
             echo ">>> diy-part1: 从 $base 抓到官方 kmod hash = $hash_value"
             break
         fi
+        hash_value=""
     done
+fi
+
+# 兜底: 在线抓不到(超时/无网/结构变化)则用已核实的官方 hash
+if [ -z "$hash_value" ]; then
+    hash_value="$OFFICIAL_KMOD_HASH"
+    echo ">>> diy-part1: 在线未抓到官方 hash, 使用已核实兜底 = $hash_value (IP 受限/超时仍可编译)"
 fi
 
 if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]] && [ -f include/version.mk ]; then
@@ -86,15 +104,18 @@ if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]] && [ -f include
     # 增强2(patch include/kernel.mk): 把 LINUX_VERMAGIC 直接写死为官方 hash
     #   双保险: 即使 .vermagic 文件被某步流程覆盖/重算,
     #   kmod 包的版本 hash 仍取官方值。
-    #   兼容官方 25.12.x 与 hanwckf 分支两种行格式。
+    #   同时覆盖两种赋值形式:
+    #     官方 25.12.x:  L26 "LINUX_VERMAGIC?=<占位>" 与 L49 "LINUX_VERMAGIC:=$(shell cat ...)"
+    #     hanwckf 分支:  单独 "LINUX_VERMAGIC:=..." 行
+    #   统一改写为 "LINUX_VERMAGIC:=<官方hash>", 使最终 make 取值无歧义。
     # =================================================================
     KM=include/kernel.mk
     if [ -f "$KM" ]; then
         TMPF=$(mktemp)
         while IFS= read -r line; do
             case "$line" in
-                *LINUX_VERMAGIC*".vermagic"*)
-                    printf '  LINUX_VERMAGIC:=%s\n' "$hash_value" ;;
+                *LINUX_VERMAGIC?=*)  printf '  LINUX_VERMAGIC:=%s\n' "$hash_value" ;;
+                *LINUX_VERMAGIC:=*)  printf '  LINUX_VERMAGIC:=%s\n' "$hash_value" ;;
                 *)
                     printf '%s\n' "$line" ;;
             esac
