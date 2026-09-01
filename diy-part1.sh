@@ -89,3 +89,25 @@ for marker in '&pcie2x1 {' 'status = "disabled";' '&vcc3v3_minipcie {' 'regulato
 done
 
 echo ">>> diy-part1: v2 overlay applied and verified OK"
+
+echo ">>> diy-part1: writing customfeeds.list (iStore store run-time source)"
+# 让编译出的固件自带正确的 iStore 运行期源 (store 是 linkease 第三方, 官方 distfeeds 无此包,
+# 故在官方自定义入口 customfeeds.list 里写入正确的 istoreos 源)。
+# 该文件编译进 /etc/apk/repositories.d/customfeeds.list, 且 sysupgrade 保留。
+CFEED_LUA=package/system/apk/files/customfeeds.list
+if [ -f "$CFEED_LUA" ]; then
+    cat > "$CFEED_LUA" <<'EOF'
+# add your custom package feeds here
+#
+# http://www.example.com/path/to/files/packages.adb
+
+# ---- iStore (lyw-immortalwrt) ----
+# store 官方第三方运行期源 (其余 diskman/video 包已在官方 packages 源, 无需独立源)
+https://istore.istoreos.com/repo-apk/all/store/packages.adb
+EOF
+    echo ">>> diy-part1: customfeeds.list written:"
+    cat "$CFEED_LUA"
+else
+    echo "!!! diy-part1: customfeeds.list template not found: $CFEED_LUA"
+fi
+echo ">>> diy-part1: customfeeds.list write done"
