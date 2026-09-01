@@ -17,6 +17,50 @@ set -e
 echo ">>> diy-part1: pwd=$(pwd)"
 echo ">>> diy-part1: GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
 
+# =====================================================================
+# 修复内核 md5 校验码(vermagic)：采用 OpenWrt 官方源内核模块 hash
+#   内核模块能否安装取决于 kernel 包版本里的 vermagic 是否与官方软件源
+#   一致。自编固件内核 .config 与官方不同 → vermagic 不同 → opkg 判定
+#   不匹配而装不上。kernel-defaults.mk 会优先使用源码根 .vermagic(若存在),
+#   否则才按本机 .config 计算。这里直接写入官方 hash 强制一致。
+#   (与 lyw/lyw-istoreos 仓库 fe29a88/c77e553 同法)
+# =====================================================================
+hash_value=""
+# 解析官方 OpenWrt release 版本: 优先取 version.mk 的 VERSION_REPO 行(如 .../releases/25.12.5),
+# 否则回退 requests 行/package/base-files
+Releases_version=""
+if [ -f include/version.mk ]; then
+    Releases_version=$(sed -n 's|.*openwrt.org/releases/\([0-9.]*\).*|\1|p' include/version.mk | head -1)
+fi
+if [ -z "$Releases_version" ]; then
+    Releases_version=$(cat package/base-files/image-config.in 2>/dev/null | sed -n 's|.*releases/\([^"]*\)".*|\1|p')
+fi
+echo ">>> diy-part1: OpenWrt releases 版本 = ${Releases_version:-未知}"
+
+if [ -n "$Releases_version" ]; then
+    for base in \
+        "https://downloads.openwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+        "https://mirrors.cernet.edu.cn/openwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+        "https://mirrors.tuna.tsinghua.edu.cn/openwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+        "https://mirrors.ustc.edu.cn/openwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+        "https://archive.openwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" ; do
+        http_value=$(wget -qO- --timeout=20 "$base" 2>/dev/null || true)
+        hash_value=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
+        if [ -n "$hash_value" ]; then
+            echo ">>> diy-part1: 从 $base 抓到官方 kmod hash = $hash_value"
+            break
+        fi
+    done
+fi
+
+if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]] && [ -f include/version.mk ]; then
+    echo "$hash_value" > .vermagic
+    echo ">>> diy-part1: 已写入源码根 .vermagic = $hash_value (官方源 kmod 可装)"
+else
+    echo ">>> diy-part1: 未抓到官方 kmod hash, 将按本机 .config 计算 vermagic(官方源 kmod 可能装不上)"
+fi
+echo ">>> diy-part1: --------------------------------------------------"
+
 PATCH="$GITHUB_WORKSPACE/custom/0001-rockchip-lyt-t68m-enable-sata2-sdio-wifi.patch"
 DTS=target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
 
