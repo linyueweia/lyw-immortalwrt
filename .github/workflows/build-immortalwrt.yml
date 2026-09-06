@@ -1,4 +1,4 @@
-name: Build ImmortalWrt T68M
+name: Build ImmortalWrt lyw
 
 on:
   workflow_dispatch:
@@ -190,6 +190,13 @@ jobs:
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
+        # 隐私处理：设备名 lyt_t68m -> lyt_lyw
+        for f in immortalwrt-*-lyt_t68m-*; do
+          [ -e "$f" ] || continue
+          nf=$(echo "$f" | sed 's/lyt_t68m/lyt_lyw/')
+          mv "$f" "$nf"
+        done
+        sed -i 's/lyt_t68m/lyt_lyw/g' sha256sums
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -207,15 +214,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: v25.12-${{ env.FILE_DATE }}-${{ github.sha }}
-        name: LYT T68M ImmortalWrt ${{ env.FILE_DATE }}
+        name: ImmortalWrt 固件 ${{ env.FILE_DATE }}
         body: |
-          LYT T68M (rk3568) ImmortalWrt openwrt-25.12 (kernel 6.12) 定制固件
-
-          包含子板恢复补丁：SATA2 (sata@fc800000) + SDIO WiFi (AIC8800, sdmmc2)。
-          内置 iStore 应用商店 (luci-app-store + luci-lib-taskd) 与磁盘管理 (luci-app-diskman)、argon 主题。
-          - eth0/eth1 千兆、eth2/eth3 RTL8125 2.5G、USB 均不受影响
-          - 刷写前请先整盘备份 mmcblk0（至少 /boot 与 overlay）
-          - 设备串口 console=ttyS2,1500000
+          images 与 sha256sums 见本 Release assets。
 
           images 与 sha256sums 见本 Release assets。
         files: |

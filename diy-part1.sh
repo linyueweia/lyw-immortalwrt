@@ -9,7 +9,7 @@
 # File name: diy-part1.sh
 # Description: OpenWrt DIY script part 1 (Before Update feeds)
 #
-# Apply the LYT T68M daughterboard DTS patch (SATA2 + SDIO WiFi AIC8800)
+# Apply hardware enablement DTS patch
 # for ImmortalWrt (DTS path/name differs from iStoreOS)
 
 set -e
@@ -132,7 +132,7 @@ fi
 echo ">>> diy-part1: --------------------------------------------------"
 
 # ============================================================
-# 通用 DTS 补丁应用函数: 处理 custom/ 下任意个 rockchip t68m dts 补丁
+# 通用 DTS 补丁应用函数: 处理 custom/ 下任意个 rockchip dts 补丁
 # 用法: apply_dts_patch <patch路径> <dts相对路径> <后置marker数组以 | 分隔(可空)>
 # ============================================================
 apply_dts_patch () {
@@ -197,7 +197,7 @@ apply_dts_patch () {
 
 DTS=target/linux/rockchip/files/arch/arm64/boot/dts/rockchip/rk3568-lyt-t68m.dts
 
-# 0001: SATA2 + SDIO WiFi AIC8800 (已有)
+# 0001: hardware enablement (已有)
 apply_dts_patch \
     "$GITHUB_WORKSPACE/custom/0001-rockchip-lyt-t68m-enable-sata2-sdio-wifi.patch" \
     "$DTS" \
