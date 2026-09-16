@@ -36,6 +36,7 @@ jobs:
       changed: ${{ steps.check.outputs.changed }}
       upstream_sha: ${{ steps.check.outputs.upstream_sha }}
       version: ${{ steps.check.outputs.version }}
+      kmod_hash: ${{ steps.kmod.outputs.hash }}
     steps:
     - uses: actions/checkout@main
 
@@ -99,6 +100,40 @@ jobs:
           echo "changed=false" >> $GITHUB_OUTPUT
         fi
 
+    - name: 获取官方 kmod hash
+      id: kmod
+      run: |
+        VERSION="${{ steps.check.outputs.version }}"
+        if [ -z "$VERSION" ]; then
+          VERSION="${{ needs.watch-upstream.outputs.version }}"
+        fi
+        if [ -z "$VERSION" ]; then
+          echo "::warning::版本为空, 无法获取 kmod hash"
+          echo "hash=" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        echo ">>> 为目标版本 v${VERSION} 获取官方 kmod hash"
+        HASH=""
+        for base in \
+          "https://downloads.immortalwrt.org/releases/${VERSION}/targets/rockchip/armv8/kmods/" \
+          "https://mirrors.cernet.edu.cn/immortalwrt/releases/${VERSION}/targets/rockchip/armv8/kmods/" \
+          "https://mirrors.ustc.edu.cn/immortalwrt/releases/${VERSION}/targets/rockchip/armv8/kmods/" ; do
+          http_value=$(curl -fsSL --connect-timeout 15 --max-time 30 "$base" 2>/dev/null || true)
+          HASH=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
+          if [ -n "$HASH" ] && echo "$HASH" | grep -qE '^[0-9a-f]{32}$'; then
+            echo ">>> 从 $base 抓到 kmod hash = $HASH"
+            break
+          fi
+          HASH=""
+        done
+        if [ -n "$HASH" ]; then
+          echo "hash=${HASH}" >> $GITHUB_OUTPUT
+          echo ">>> kmod hash = ${HASH}"
+        else
+          echo "::warning::所有镜像源均未抓到 kmod hash, 将留给 diy-part1.sh 自行兜底"
+          echo "hash=" >> $GITHUB_OUTPUT
+        fi
+
   build:
     needs: watch-upstream
     if: needs.watch-upstream.outputs.changed == 'true'
@@ -149,7 +184,9 @@ jobs:
     - name: 加载自定义 feeds+DIY1
       env:
         FEEDS_CONF_PATH: ${{ env.ARCHITECTURE }}/${{ env.FEEDS_CONF }}
+        UPSTREAM_KMOD_HASH: ${{ needs.watch-upstream.outputs.kmod_hash }}
       run: |
+        echo ">>> workflow 传递 kmod hash: ${UPSTREAM_KMOD_HASH:-空(留给脚本自取)}"
         [ -e $FEEDS_CONF_PATH ] && mv $FEEDS_CONF_PATH openwrt/$FEEDS_CONF
         chmod +x $DIY_P1_SH
         cd openwrt

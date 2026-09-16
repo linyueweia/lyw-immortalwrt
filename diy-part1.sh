@@ -26,48 +26,50 @@ echo ">>> diy-part1: GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
 #   (与 lyw/lyw-istoreos 仓库 fe29a88/c77e553 同法)
 # =====================================================================
 hash_value=""
-# ---------------------------------------------------------------------
-# 官方 kmods 目录 hash 锚点（硬兜底）
-#   ImmortalWrt 25.12.2 rockchip/armv8 官方软件源的内核模块版本 hash，
-#   已实测 https://downloads.immortalwrt.org/releases/25.12.2/targets/rockchip/armv8/kmods/
-#   下 6.12.103-1-<此hash>/packages.adb 返回 HTTP 200。
-#   运行时 wget 抓取可能因网络/超时失败（CI 里表现为无输出），故一旦抓不到
-#   立即回退到该已核实的官方 hash，绝不让 vermagic 静默降级。
-# ---------------------------------------------------------------------
+
+# ====== 第0层: workflow 传入的 hash（最高优先级） ======
+#   watch-upstream job 从官方镜像源实时获取并传递，永远是最新值。
+#   用于抵消 CI 内 curl 抓取失败（超时/限速）时回退旧硬编码的风险。
+if [ -n "$UPSTREAM_KMOD_HASH" ] && [[ "$UPSTREAM_KMOD_HASH" =~ ^[0-9a-f]{32}$ ]]; then
+    hash_value="$UPSTREAM_KMOD_HASH"
+    echo ">>> diy-part1: 使用 workflow 传入的 kmod hash = $hash_value (最高优先级)"
+fi
+
+# ====== 第1层: 在线实时抓取（二级优先） ======
+if [ -z "$hash_value" ]; then
+    # 解析官方 ImmortalWrt release 版本: 优先取 version.mk 的 VERSION_REPO 行
+    Releases_version=""
+    if [ -f include/version.mk ]; then
+        Releases_version=$(sed -n 's|.*immortalwrt.org/releases/\([0-9.]*\).*|\1|p' include/version.mk | head -1)
+    fi
+    if [ -z "$Releases_version" ]; then
+        Releases_version=$(cat package/base-files/image-config.in 2>/dev/null | sed -n 's|.*releases/\([^"]*\)".*|\1|p')
+    fi
+    echo ">>> diy-part1: OpenWrt releases 版本 = ${Releases_version:-未知}"
+
+    if [ -n "$Releases_version" ]; then
+        for base in \
+            "https://downloads.immortalwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+            "https://mirrors.cernet.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
+            "https://mirrors.ustc.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" ; do
+            http_value=$(curl -fsSL --connect-timeout 15 --max-time 25 "$base" 2>/dev/null || true)
+            hash_value=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
+            if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]]; then
+                echo ">>> diy-part1: 从 $base 抓到官方 kmod hash = $hash_value"
+                break
+            fi
+            hash_value=""
+        done
+    fi
+fi
+
+# ====== 第2层: 硬编码兜底（最低优先级，仅在前两层都失败时使用） ======
+#   当 workflow 传入为空 + 在线抓取全部超时/失败时使用。
+#   该值为手动核实的最近已知 hash，应随大版本更新手动刷新。
 OFFICIAL_KMOD_HASH="9695dbb0de913313770c73e57b594a48"
-
-# 解析官方 ImmortalWrt release 版本: 优先取 version.mk 的 VERSION_REPO 行(如 .../releases/25.12.1),
-# 否则回退 requests 行/package/base-files
-Releases_version=""
-if [ -f include/version.mk ]; then
-    Releases_version=$(sed -n 's|.*immortalwrt.org/releases/\([0-9.]*\).*|\1|p' include/version.mk | head -1)
-fi
-if [ -z "$Releases_version" ]; then
-    Releases_version=$(cat package/base-files/image-config.in 2>/dev/null | sed -n 's|.*releases/\([^"]*\)".*|\1|p')
-fi
-echo ">>> diy-part1: OpenWrt releases 版本 = ${Releases_version:-未知}"
-
-# 优先在线抓取官方 hash（限时，避免长时间卡住无输出）
-if [ -n "$Releases_version" ]; then
-    for base in \
-        "https://downloads.immortalwrt.org/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
-        "https://mirrors.cernet.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" \
-        "https://mirrors.ustc.edu.cn/immortalwrt/releases/${Releases_version}/targets/rockchip/armv8/kmods/" ; do
-        # 用 curl 而非 wget: 实测 wget 在该官方源上会异常卡死(超时不生效), curl 约1s稳定抓到
-        http_value=$(curl -fsSL --connect-timeout 15 --max-time 25 "$base" 2>/dev/null || true)
-        hash_value=$(echo "$http_value" | sed -n 's/.*-\([0-9a-f]\{32\}\)\/*.*/\1/p' | head -1)
-        if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]]; then
-            echo ">>> diy-part1: 从 $base 抓到官方 kmod hash = $hash_value"
-            break
-        fi
-        hash_value=""
-    done
-fi
-
-# 兜底: 在线抓不到(超时/无网/结构变化)则用已核实的官方 hash
 if [ -z "$hash_value" ]; then
     hash_value="$OFFICIAL_KMOD_HASH"
-    echo ">>> diy-part1: 在线未抓到官方 hash, 使用已核实兜底 = $hash_value (IP 受限/超时仍可编译)"
+    echo ">>> diy-part1: ⚠ workflow 传入为空 + 在线抓取失败, 使用硬编码兜底 = $hash_value"
 fi
 
 if [ -n "$hash_value" ] && [[ "$hash_value" =~ ^[0-9a-f]{32}$ ]] && [ -f include/version.mk ]; then
