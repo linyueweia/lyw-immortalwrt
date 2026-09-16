@@ -64,8 +64,8 @@ if [ -z "$hash_value" ]; then
 fi
 
 # ====== 第2层: 硬编码兜底（最低优先级，仅在前两层都失败时使用） ======
-#   当 workflow 传入为空 + 在线抓取全部超时/失败时使用。
-#   该值为手动核实的最近已知 hash，应随大版本更新手动刷新。
+#   值由 workflow "记录已编译上游版本" 步骤在每次成功编译后自动同步为
+#   当前版本官方 hash（无需手动维护）。仅当 workflow 与在线抓取都失败时落于此。
 OFFICIAL_KMOD_HASH="9695dbb0de913313770c73e57b594a48"
 if [ -z "$hash_value" ]; then
     hash_value="$OFFICIAL_KMOD_HASH"

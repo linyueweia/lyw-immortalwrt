@@ -298,15 +298,33 @@ jobs:
       env:
         UPSTREAM_VERSION: ${{ needs.watch-upstream.outputs.version }}
         UPSTREAM_SHA: ${{ needs.watch-upstream.outputs.upstream_sha }}
+        UPSTREAM_KMOD_HASH: ${{ needs.watch-upstream.outputs.kmod_hash }}
       run: |
         cd "$GITHUB_WORKSPACE"
         git config user.name "immwrt-build-bot"
         git config user.email "immwrt-build-bot@users.noreply.github.com"
+
+        # 1. 更新 last-upstream-sha
         echo "${UPSTREAM_VERSION}:${UPSTREAM_SHA}" > last-upstream-sha
         git add -- last-upstream-sha
-        if git diff --cached --quiet -- last-upstream-sha; then
-          echo "last-upstream-sha 无变化，跳过提交"
+
+        # 2. 自动同步硬编码兜底 hash 为最新值（第2层兜底无需手动维护）
+        if [ -n "$UPSTREAM_KMOD_HASH" ] && echo "$UPSTREAM_KMOD_HASH" | grep -qE '^[0-9a-f]{32}$'; then
+          CUR_HASH=$(sed -n 's/^OFFICIAL_KMOD_HASH="\([0-9a-f]\{32\}\)"/\1/p' diy-part1.sh)
+          if [ -n "$CUR_HASH" ] && [ "$CUR_HASH" != "$UPSTREAM_KMOD_HASH" ]; then
+            sed -i "s/^OFFICIAL_KMOD_HASH=\"${CUR_HASH}\"/OFFICIAL_KMOD_HASH=\"${UPSTREAM_KMOD_HASH}\"/" diy-part1.sh
+            git add -- diy-part1.sh
+            echo ">>> 硬编码兜底 hash 已自动更新: ${CUR_HASH} -> ${UPSTREAM_KMOD_HASH}"
+          else
+            echo ">>> 硬编码兜底 hash 已是当前值, 无需更新"
+          fi
         else
-          git commit -m "build: record upstream v${UPSTREAM_VERSION} ${UPSTREAM_SHA}"
+          echo "::warning::workflow 未抓到 kmod hash, 硬编码兜底保持不变"
+        fi
+
+        if git diff --cached --quiet; then
+          echo "无变化，跳过提交"
+        else
+          git commit -m "build: record upstream v${UPSTREAM_VERSION} ${UPSTREAM_SHA} (kmod hash ${UPSTREAM_KMOD_HASH})"
           git push origin "${{ github.ref_name }}" || echo "push 失败(可忽略)"
         fi
