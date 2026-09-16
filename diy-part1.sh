@@ -28,9 +28,9 @@ echo ">>> diy-part1: GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
 hash_value=""
 # ---------------------------------------------------------------------
 # 官方 kmods 目录 hash 锚点（硬兜底）
-#   ImmortalWrt 25.12.1 rockchip/armv8 官方软件源的内核模块版本 hash，
-#   已实测 https://downloads.immortalwrt.org/releases/25.12.1/targets/rockchip/armv8/kmods/
-#   下 6.12.94-1-<此hash>/packages.adb 返回 HTTP 200。
+#   ImmortalWrt 25.12.2 rockchip/armv8 官方软件源的内核模块版本 hash，
+#   已实测 https://downloads.immortalwrt.org/releases/25.12.2/targets/rockchip/armv8/kmods/
+#   下 6.12.103-1-<此hash>/packages.adb 返回 HTTP 200。
 #   运行时 wget 抓取可能因网络/超时失败（CI 里表现为无输出），故一旦抓不到
 #   立即回退到该已核实的官方 hash，绝不让 vermagic 静默降级。
 # ---------------------------------------------------------------------
