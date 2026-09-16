@@ -20,8 +20,6 @@ concurrency:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  # use official stable 25.12.2 source (tag v25.12.2)
-  REPO_BRANCH: v25.12.2
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
@@ -37,46 +35,82 @@ jobs:
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       upstream_sha: ${{ steps.check.outputs.upstream_sha }}
+      version: ${{ steps.check.outputs.version }}
     steps:
     - uses: actions/checkout@main
 
-    - name: 检查上游 openwrt-25.12 更新
+    - name: 自动检测 ImmortalWrt 最新稳定版本
       id: check
       run: |
         FORCE="${{ github.event_name == 'workflow_dispatch' && inputs.force_build || 'false' }}"
-        LAST_SHA=""
-        if [ -f last-upstream-sha ]; then
-          LAST_SHA=$(cat last-upstream-sha)
+
+        # ---- 1. 从 GitHub releases API 获取最新稳定版 tag (如 v25.12.2) ----
+        LATEST_JSON=$(curl -fsSL --connect-timeout 15 --max-time 30 \
+          "https://api.github.com/repos/immortalwrt/immortalwrt/releases/latest" 2>/dev/null || true)
+        LATEST_TAG=$(echo "$LATEST_JSON" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)
+
+        if [ -z "$LATEST_TAG" ]; then
+          echo "::warning::无法获取 ImmortalWrt 最新版本, 本次跳过"
+          echo "changed=false" >> $GITHUB_OUTPUT
+          exit 0
         fi
-        echo "last_built_sha=${LAST_SHA}"
+
+        VERSION="$LATEST_TAG"
+        echo ">>> 检测到最新稳定版本: ImmortalWrt v${VERSION}"
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+        # ---- 2. 获取该版本最新 commit SHA ----
+        API_SHA=$(curl -fsSL --connect-timeout 15 --max-time 30 \
+          "https://api.github.com/repos/immortalwrt/immortalwrt/commits/v${VERSION}?per_page=1" \
+          | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1 || true)
+
+        if [ -z "$API_SHA" ]; then
+          echo "::warning::无法获取 v${VERSION} 的 commit SHA, 本次跳过"
+          echo "changed=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        echo ">>> 上游 commit SHA: ${API_SHA}"
+        echo "upstream_sha=${API_SHA}" >> $GITHUB_OUTPUT
+
+        # ---- 3. 对比 last-upstream-sha (格式: VERSION:SHA) 判断是否需要重编 ----
+        LAST_RECORD=""
+        if [ -f last-upstream-sha ]; then
+          LAST_RECORD=$(cat last-upstream-sha)
+        fi
+        echo ">>> 上次编译记录: ${LAST_RECORD:-无}"
         echo "force_build=${FORCE}"
 
-        API_SHA=$(curl -s "https://api.github.com/repos/immortalwrt/immortalwrt/commits/v25.12.2?per_page=1" \
-          | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1 || true)
-        echo "upstream_sha=${API_SHA}"
+        # 拆分旧记录: VERSION:SHA 或 仅 SHA(兼容旧格式)
+        LAST_VERSION=$(echo "$LAST_RECORD" | cut -d: -f1)
+        LAST_SHA=$(echo "$LAST_RECORD" | cut -d: -f2)
+        if [ "$LAST_SHA" = "$LAST_RECORD" ]; then
+          # 旧格式只有 SHA, 视为版本不匹配, 触发重编
+          LAST_VERSION=""
+        fi
 
         if [ "$FORCE" = "true" ]; then
-          echo "changed=true"
+          echo ">>> 强制重编"
           echo "changed=true" >> $GITHUB_OUTPUT
-        elif [ -z "$API_SHA" ]; then
-          echo "检查上游失败，本次跳过"
-          echo "changed=false" >> $GITHUB_OUTPUT
-        elif [ "$API_SHA" = "$LAST_SHA" ]; then
-          echo "上游无更新，无需重编"
-          echo "changed=false" >> $GITHUB_OUTPUT
+        elif [ "$VERSION" != "$LAST_VERSION" ] || [ "$API_SHA" != "$LAST_SHA" ]; then
+          echo ">>> 上游有更新 (版本: ${LAST_VERSION:-无} -> ${VERSION}, SHA: ${LAST_SHA:-无} -> ${API_SHA})"
+          echo "changed=true" >> $GITHUB_OUTPUT
         else
-          echo "上游有新版本，触发重编"
-          echo "changed=true" >> $GITHUB_OUTPUT
+          echo ">>> 上游无变化, 无需重编"
+          echo "changed=false" >> $GITHUB_OUTPUT
         fi
-        echo "upstream_sha=${API_SHA}" >> $GITHUB_OUTPUT
 
   build:
     needs: watch-upstream
     if: needs.watch-upstream.outputs.changed == 'true'
     runs-on: ubuntu-22.04
+    env:
+      REPO_BRANCH: v${{ needs.watch-upstream.outputs.version }}
     steps:
     - name: 准备完成
       uses: actions/checkout@main
+
+    - name: 显示编译目标版本
+      run: echo ">>> 编译 ImmortalWrt ${{ env.REPO_BRANCH }}"
 
     - name: 初始化编译环境
       env:
@@ -213,11 +247,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: v25.12-${{ env.FILE_DATE }}-${{ github.sha }}
-        name: ImmortalWrt 固件 ${{ env.FILE_DATE }}
+        tag_name: ${{ env.REPO_BRANCH }}-${{ env.FILE_DATE }}-${{ github.sha }}
+        name: ImmortalWrt ${{ env.REPO_BRANCH }} 固件 ${{ env.FILE_DATE }}
         body: |
-          images 与 sha256sums 见本 Release assets。
-
           images 与 sha256sums 见本 Release assets。
         files: |
           openwrt/bin/targets/*/*/immortalwrt-*
@@ -227,16 +259,17 @@ jobs:
     - name: 记录已编译上游版本
       if: success()
       env:
+        UPSTREAM_VERSION: ${{ needs.watch-upstream.outputs.version }}
         UPSTREAM_SHA: ${{ needs.watch-upstream.outputs.upstream_sha }}
       run: |
         cd "$GITHUB_WORKSPACE"
         git config user.name "immwrt-build-bot"
         git config user.email "immwrt-build-bot@users.noreply.github.com"
-        echo "${UPSTREAM_SHA}" > last-upstream-sha
+        echo "${UPSTREAM_VERSION}:${UPSTREAM_SHA}" > last-upstream-sha
         git add -- last-upstream-sha
         if git diff --cached --quiet -- last-upstream-sha; then
           echo "last-upstream-sha 无变化，跳过提交"
         else
-          git commit -m "build: record upstream ${{ env.REPO_BRANCH }} ${UPSTREAM_SHA}"
+          git commit -m "build: record upstream v${UPSTREAM_VERSION} ${UPSTREAM_SHA}"
           git push origin "${{ github.ref_name }}" || echo "push 失败(可忽略)"
         fi
